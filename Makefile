@@ -12,7 +12,7 @@ fish.o: fish.c
 	$(CC) $(CFLAGS) -c -o $@ $^
 
 cmdline.o: cmdline.c cmdline.h
-	$(CC) $(CFLAGS) -fPIC -c $^ -o $@
+	$(CC) $(CFLAGS) -fPIC -c $< -o $@
 
 libcmdline.so: cmdline.o
 	$(CC) $(CFLAGS) -shared $^ -o $@
