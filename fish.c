@@ -3,6 +3,7 @@
 #include <wait.h>
 #include <string.h>
 #include <stdlib.h>
+#include <fcntl.h>
 
 #include "cmdline.h"
 
@@ -14,9 +15,35 @@
  * Executes a command
  * @param commands The command to execute
  */
-void execute_command(struct cmd *commands) {
+void execute_command(struct cmd *commands, char *file_input, char *file_output, bool file_output_append) {
     pid_t pid = fork();
+
     if (pid == 0) {
+        // Redirecting input
+        if (file_input != NULL) {
+            int input = open(file_input, O_RDONLY);
+            if (input == -1) {
+                perror("Input redirection failed");
+            }
+            else {
+                dup2(input, STDIN_FILENO);
+                close(input);
+            }
+        }
+
+        // Redirecting output
+        if (file_output != NULL) {
+            int output = open(
+                    file_output,
+                    O_WRONLY | O_CREAT | (file_output_append ? O_APPEND : O_TRUNC)
+            );
+            if (output == -1) perror("Output redirection failed");
+            else {
+                dup2(output, STDOUT_FILENO);
+                close(output);
+            }
+        }
+
         // Execute the command
         execvp(commands->args[0], commands->args);
         perror("execvp failed");
@@ -66,7 +93,12 @@ void execute_line(struct line *line) {
             cd(line->cmds[i].args[1]);
         }
         // Execute other commands
-        else execute_command(&line->cmds[i]);
+        else execute_command(
+                &line->cmds[i],
+                i == 0 ? line->file_input : NULL,
+                i == line->n_cmds - 1 ? line->file_output : NULL,
+                line->file_output_append
+            );
     }
 }
 
@@ -121,7 +153,10 @@ int main() {
                 li.n_cmds == 1
                 && li.cmds[0].n_args == 1
                 && strcmp(li.cmds[0].args[0], "exit") == 0
-        ) return 0;
+        ) {
+            line_reset(&li);
+            return 0;
+        }
 
         execute_line(&li);
 
