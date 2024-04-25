@@ -65,10 +65,9 @@ int main() {
     line_init(&li);
 
     for (;;) {
-        char *buffer = calloc(BUFSIZ, sizeof(char));
-        char *cwd = getcwd(buffer, BUFSIZ);
+        char *cwd = getcwd(NULL, 0);
         printf("%s fish> ", cwd != NULL ? cwd : "");
-        free(buffer);
+        if (cwd != NULL) free(cwd);
 
         fgets(buf, BUFLEN, stdin);
 
