@@ -39,8 +39,19 @@ void execute_command(struct cmd *commands) {
  * @param path The path to set the current working directory to
  */
 void cd(char *path) {
+    char *newPath = NULL;
     if (strcmp(path, "~") == 0) {
+        newPath = getenv("HOME");
+        if (newPath == NULL) {
+            fprintf(stderr, "Error while reading the HOME environment variable");
+            return;
+        }
+    }
 
+    int status = chdir(newPath != NULL ? newPath : path);
+    if (status == -1) perror("Failed to set working directory");
+    else if (status != 0) {
+        fprintf(stderr, "Failed to set working directory with error %d", status);
     }
 }
 
@@ -51,9 +62,10 @@ void cd(char *path) {
 void execute_line(struct line *line) {
     for (size_t i = 0; i < line->n_cmds; ++i) {
         // Execute the cd command
-        if (line->cmds[i].n_args == 1 && strcmp(line->cmds[i].args[0], "cd") == 0) {
-            cd(line->cmds[i].args[0]);
+        if (line->cmds[i].n_args == 2 && strcmp(line->cmds[i].args[0], "cd") == 0) {
+            cd(line->cmds[i].args[1]);
         }
+        // Execute other commands
         else execute_command(&line->cmds[i]);
     }
 }
@@ -104,12 +116,15 @@ int main() {
 
         fprintf(stderr, "\tBackground: %s\n", YES_NO(li.background));
 
-        if (li.cmds[0].n_args == 1 && strcmp(li.cmds[0].args[0], "exit") == 0) break;
+        // Handle the exit command
+        if (
+                li.n_cmds == 1
+                && li.cmds[0].n_args == 1
+                && strcmp(li.cmds[0].args[0], "exit") == 0
+        ) return 0;
 
         execute_line(&li);
 
         line_reset(&li);
     }
-
-    return 0;
 }
