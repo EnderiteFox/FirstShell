@@ -12,19 +12,70 @@
 #define YES_NO(i) ((i) ? "Y" : "N")
 
 /**
- * Executes a command
- * @param commands The command to execute
+ * Reads the termination state of a process and displays how it ended
+ * @param pid The pid of the process to read the state from
  */
-void execute_command(struct cmd *commands, char *file_input, char *file_output, bool file_output_append) {
+void read_process_state(pid_t pid) {
+    int stat;
+    pid = waitpid(pid, &stat, 0);
+    if (pid == -1) {
+        perror("waitpid");
+        return;
+    }
+
+    // Print child end status
+    if (WIFEXITED(stat)) {
+        char buf[100];
+        snprintf(buf, 100, "PID %d finished with exit status %i\n", pid, WEXITSTATUS(stat));
+        write(STDERR_FILENO, buf, strlen(buf));
+    }
+    if (WIFSIGNALED(stat)) {
+        char buf[100];
+        snprintf(buf, 100, "PID %d finished with signal %i\n", pid, WTERMSIG(stat));
+        write(STDERR_FILENO, buf, strlen(buf));
+    }
+}
+
+/**
+ * An empty handler for SIGINT
+ */
+void sigint_handler() {}
+
+/**
+ * The handler for SIGCHLD
+ */
+void sigchld_handler() {
+    read_process_state(0);
+}
+
+/**
+ * Executes a command
+ * @param command The command to execute
+ */
+void execute_command(struct line *line, struct cmd *command, size_t commandIndex) {
     pid_t pid = fork();
+    if (pid == -1) {
+        perror("fork failed");
+        return;
+    }
 
     if (pid == 0) {
+        if (line->background) {
+            // Installing SIGINT signal handler
+            struct sigaction action;
+            action.sa_flags = 0;
+            sigemptyset(&action.sa_mask);
+            action.sa_handler = SIG_IGN;
+            sigaction(SIGCHLD, &action, NULL);
+        }
+
         // Redirecting input
-        if (file_input != NULL) {
-            int input = open(file_input, O_RDONLY);
-            if (input == -1) {
-                perror("Input redirection failed");
-            }
+        if ((commandIndex == 0 && line->file_input != NULL) || line->background) {
+            int input = open(
+                    line->file_input != NULL ? line->file_input : "/dev/null",
+                    O_RDONLY
+            );
+            if (input == -1) perror("Input redirection failed");
             else {
                 dup2(input, STDIN_FILENO);
                 close(input);
@@ -32,10 +83,10 @@ void execute_command(struct cmd *commands, char *file_input, char *file_output, 
         }
 
         // Redirecting output
-        if (file_output != NULL) {
+        if (commandIndex == line->n_cmds - 1 && line->file_output != NULL) {
             int output = open(
-                    file_output,
-                    O_WRONLY | O_CREAT | (file_output_append ? O_APPEND : O_TRUNC)
+                    line->file_output,
+                    O_WRONLY | O_CREAT | (line->file_output_append ? O_APPEND : O_TRUNC)
             );
             if (output == -1) perror("Output redirection failed");
             else {
@@ -45,20 +96,12 @@ void execute_command(struct cmd *commands, char *file_input, char *file_output, 
         }
 
         // Execute the command
-        execvp(commands->args[0], commands->args);
+        execvp(command->args[0], command->args);
         perror("execvp failed");
+        exit(1);
     }
 
-    int stat;
-    wait(&stat);
-
-    // Print child end status
-    if (WIFEXITED(stat)) {
-        fprintf(stderr, "Command finished with exit status %i\n", WEXITSTATUS(stat));
-    }
-    if (WIFSIGNALED(stat)) {
-        fprintf(stderr, "Command finished with signal %i\n", WTERMSIG(stat));
-    }
+    if (!line->background) pause();
 }
 
 /**
@@ -67,6 +110,8 @@ void execute_command(struct cmd *commands, char *file_input, char *file_output, 
  */
 void cd(char *path) {
     char *newPath = NULL;
+
+    // Get the home path
     if (strcmp(path, "~") == 0) {
         newPath = getenv("HOME");
         if (newPath == NULL) {
@@ -75,6 +120,7 @@ void cd(char *path) {
         }
     }
 
+    // Set the new current working directory
     int status = chdir(newPath != NULL ? newPath : path);
     if (status == -1) perror("Failed to set working directory");
     else if (status != 0) {
@@ -94,23 +140,42 @@ void execute_line(struct line *line) {
         }
         // Execute other commands
         else execute_command(
+                line,
                 &line->cmds[i],
-                i == 0 ? line->file_input : NULL,
-                i == line->n_cmds - 1 ? line->file_output : NULL,
-                line->file_output_append
-            );
+                i
+        );
     }
 }
 
 int main() {
+    // Install SIGINT signal handler
+    struct sigaction action;
+    action.sa_flags = 0;
+    sigemptyset(&action.sa_mask);
+    action.sa_handler = sigint_handler;
+    sigaction(SIGINT, &action, NULL);
+
+    // Installing SIGCHLD signal handler
+    struct sigaction act2;
+    act2.sa_flags = 0;
+    sigemptyset(&act2.sa_mask);
+    act2.sa_handler = sigchld_handler;
+    sigaction(SIGCHLD, &act2, NULL);
+
     struct line li;
     char buf[BUFLEN];
 
     line_init(&li);
 
+    sigset_t mask;
+    sigaddset(&mask, SIGCHLD);
+
     for (;;) {
+        // Mask SIGCHLD
+        sigprocmask(SIG_BLOCK, &mask, NULL);
+
         char *cwd = getcwd(NULL, 0);
-        printf("%s fish> ", cwd != NULL ? cwd : "");
+        printf("%s> ", cwd != NULL ? cwd : "");
         if (cwd != NULL) free(cwd);
 
         fgets(buf, BUFLEN, stdin);
@@ -147,6 +212,9 @@ int main() {
         }
 
         fprintf(stderr, "\tBackground: %s\n", YES_NO(li.background));
+
+        // Unmask SIGCHLD
+        sigprocmask(SIG_UNBLOCK, &mask, NULL);
 
         // Handle the exit command
         if (
