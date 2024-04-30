@@ -4,12 +4,16 @@
 #include <string.h>
 #include <stdlib.h>
 #include <fcntl.h>
+#include <libgen.h>
 
 #include "cmdline.h"
 
 #define BUFLEN 512
+#define ENDSTATUS_BUF_LEN 1024
 
 #define YES_NO(i) ((i) ? "Y" : "N")
+
+char *endstatus;
 
 /**
  * Reads the termination state of a process and displays how it ended
@@ -25,14 +29,16 @@ void read_process_state(pid_t pid) {
 
     // Print child end status
     if (WIFEXITED(stat)) {
-        char buf[100];
-        snprintf(buf, 100, "PID %d finished with exit status %i\n", pid, WEXITSTATUS(stat));
-        write(STDERR_FILENO, buf, strlen(buf));
+        snprintf(
+                endstatus, ENDSTATUS_BUF_LEN,
+                "PID %d finished with exit status %i\n", pid, WEXITSTATUS(stat)
+        );
     }
     if (WIFSIGNALED(stat)) {
-        char buf[100];
-        snprintf(buf, 100, "PID %d finished with signal %i\n", pid, WTERMSIG(stat));
-        write(STDERR_FILENO, buf, strlen(buf));
+        snprintf(
+                endstatus, ENDSTATUS_BUF_LEN,
+                "PID %d finished with signal %i\n", pid, WTERMSIG(stat)
+        );
     }
 }
 
@@ -45,7 +51,7 @@ void sigint_handler() {}
  * The handler for SIGCHLD
  */
 void sigchld_handler() {
-    read_process_state(0);
+    read_process_state(-1);
 }
 
 /**
@@ -148,6 +154,9 @@ void execute_line(struct line *line) {
 }
 
 int main() {
+    // Create buffer for displaying end status
+    endstatus = calloc(ENDSTATUS_BUF_LEN, sizeof(char));
+
     // Install SIGINT signal handler
     struct sigaction action;
     action.sa_flags = 0;
@@ -157,7 +166,7 @@ int main() {
 
     // Installing SIGCHLD signal handler
     struct sigaction act2;
-    act2.sa_flags = 0;
+    act2.sa_flags = SA_RESTART;
     sigemptyset(&act2.sa_mask);
     act2.sa_handler = sigchld_handler;
     sigaction(SIGCHLD, &act2, NULL);
@@ -167,15 +176,17 @@ int main() {
 
     line_init(&li);
 
-    sigset_t mask;
-    sigaddset(&mask, SIGCHLD);
 
     for (;;) {
-        // Mask SIGCHLD
-        sigprocmask(SIG_BLOCK, &mask, NULL);
+        // Display end status
+        if (strlen(endstatus) > 0) {
+            fprintf(stderr, "%s", endstatus);
+            for (int i = 0; i < ENDSTATUS_BUF_LEN; ++i) endstatus[i] = '\0';
+        }
 
+        // Display prompt
         char *cwd = getcwd(NULL, 0);
-        printf("%s> ", cwd != NULL ? cwd : "");
+        printf("fish %s> ", cwd != NULL ? basename(cwd) : "");
         if (cwd != NULL) free(cwd);
 
         fgets(buf, BUFLEN, stdin);
@@ -213,15 +224,13 @@ int main() {
 
         fprintf(stderr, "\tBackground: %s\n", YES_NO(li.background));
 
-        // Unmask SIGCHLD
-        sigprocmask(SIG_UNBLOCK, &mask, NULL);
-
         // Handle the exit command
         if (
                 li.n_cmds == 1
                 && li.cmds[0].n_args == 1
                 && strcmp(li.cmds[0].args[0], "exit") == 0
         ) {
+            free(endstatus);
             line_reset(&li);
             return 0;
         }

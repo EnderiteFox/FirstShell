@@ -1,4 +1,6 @@
 *.o
 *.so
+*.txt
+*.sh
 fish
 cmdline_test
