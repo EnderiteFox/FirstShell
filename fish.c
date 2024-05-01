@@ -22,10 +22,7 @@ char *endstatus;
 void read_process_state(pid_t pid) {
     int stat;
     pid = waitpid(pid, &stat, 0);
-    if (pid == -1) {
-        perror("waitpid");
-        return;
-    }
+    if (pid == -1) return;
 
     // Print child end status
     if (WIFEXITED(stat)) {
@@ -56,14 +53,24 @@ void sigchld_handler() {
 
 /**
  * Executes a command
+ * @param line The command line the command is from
  * @param command The command to execute
+ * @param commandIndex The index of the command in the list of commands
+ * @param pipeIn The fid of the pipe to use. -1 if no pipe has to be used
+ * @return The fid of the pipe opened for the command, -1 if an error occured
  */
-void execute_command(struct line *line, struct cmd *command, size_t commandIndex) {
+int execute_command(struct line *line, struct cmd *command, size_t commandIndex, int pipeIn) {
+    // Opening pipe if needed
+    int pipes[2];
+    if (commandIndex != line->n_cmds - 1) pipe(pipes);
+
+    // Forking
     pid_t pid = fork();
     if (pid == -1) {
         perror("fork failed");
-        return;
+        return -1;
     }
+
 
     if (pid == 0) {
         if (line->background) {
@@ -76,7 +83,11 @@ void execute_command(struct line *line, struct cmd *command, size_t commandIndex
         }
 
         // Redirecting input
-        if ((commandIndex == 0 && line->file_input != NULL) || line->background) {
+        if (pipeIn > 0) {
+            dup2(pipeIn, STDIN_FILENO);
+            close(pipeIn);
+        }
+        else if ((commandIndex == 0 && line->file_input != NULL) || line->background) {
             int input = open(
                     line->file_input != NULL ? line->file_input : "/dev/null",
                     O_RDONLY
@@ -89,6 +100,10 @@ void execute_command(struct line *line, struct cmd *command, size_t commandIndex
         }
 
         // Redirecting output
+        if (commandIndex != line->n_cmds - 1) {
+            dup2(pipes[1], STDOUT_FILENO);
+            close(pipes[1]);
+        }
         if (commandIndex == line->n_cmds - 1 && line->file_output != NULL) {
             int output = open(
                     line->file_output,
@@ -107,7 +122,12 @@ void execute_command(struct line *line, struct cmd *command, size_t commandIndex
         exit(1);
     }
 
-    if (!line->background) pause();
+    if (commandIndex != line->n_cmds - 1) close(pipes[1]);
+    if (pipeIn > 0) close(pipeIn);
+
+    if (!line->background && commandIndex == line->n_cmds - 1) read_process_state(pid);
+    if (commandIndex != line->n_cmds - 1) return pipes[0];
+    else return -1;
 }
 
 /**
@@ -139,16 +159,18 @@ void cd(char *path) {
  * @param line The line to process
  */
 void execute_line(struct line *line) {
+    int currPipe = -1;
     for (size_t i = 0; i < line->n_cmds; ++i) {
         // Execute the cd command
         if (line->cmds[i].n_args == 2 && strcmp(line->cmds[i].args[0], "cd") == 0) {
             cd(line->cmds[i].args[1]);
         }
         // Execute other commands
-        else execute_command(
+        else currPipe = execute_command(
                 line,
                 &line->cmds[i],
-                i
+                i,
+                currPipe
         );
     }
 }
