@@ -5,35 +5,33 @@
 #include <stdlib.h>
 #include <fcntl.h>
 #include <libgen.h>
+#include <pwd.h>
 
 #include "cmdline.h"
 
 #define BUFLEN 512
-#define ENDSTATUS_BUF_LEN 1024
+#define ENDSTATUS_BUF_LEN 4096
 
 #define YES_NO(i) ((i) ? "Y" : "N")
 
 char *endstatus;
 
 /**
- * Reads the termination state of a process and displays how it ended
- * @param pid The pid of the process to read the state from
+ * Prints how a process ended
+ * @param stat The stat of how the process ended
+ * @param pid The PID of the process that ended
  */
-void read_process_state(pid_t pid) {
-    int stat;
-    pid = waitpid(pid, &stat, 0);
-    if (pid == -1) return;
-
+void display_process_end(int stat, pid_t pid) {
     // Print child end status
     if (WIFEXITED(stat)) {
         snprintf(
-                endstatus, ENDSTATUS_BUF_LEN,
+                endstatus + strlen(endstatus), ENDSTATUS_BUF_LEN - strlen(endstatus),
                 "PID %d finished with exit status %i\n", pid, WEXITSTATUS(stat)
         );
     }
     if (WIFSIGNALED(stat)) {
         snprintf(
-                endstatus, ENDSTATUS_BUF_LEN,
+                endstatus + strlen(endstatus), ENDSTATUS_BUF_LEN - strlen(endstatus),
                 "PID %d finished with signal %i\n", pid, WTERMSIG(stat)
         );
     }
@@ -48,7 +46,12 @@ void sigint_handler() {}
  * The handler for SIGCHLD
  */
 void sigchld_handler() {
-    read_process_state(-1);
+    int stat;
+    pid_t pid;
+    do {
+        pid = waitpid(-1, &stat, WNOHANG);
+        if (pid > 0) display_process_end(stat, pid);
+    } while (pid != -1);
 }
 
 /**
@@ -125,7 +128,11 @@ int execute_command(struct line *line, struct cmd *command, size_t commandIndex,
     if (commandIndex != line->n_cmds - 1) close(pipes[1]);
     if (pipeIn > 0) close(pipeIn);
 
-    if (!line->background && commandIndex == line->n_cmds - 1) read_process_state(pid);
+    if (!line->background && commandIndex == line->n_cmds - 1) {
+        int stat;
+        waitpid(pid, &stat, 0);
+        display_process_end(stat, pid);
+    }
     if (commandIndex != line->n_cmds - 1) return pipes[0];
     else return -1;
 }
@@ -144,6 +151,22 @@ void cd(char *path) {
             fprintf(stderr, "Error while reading the HOME environment variable");
             return;
         }
+    }
+    if (strlen(path) >= 2 && path[0] == '~' && path[1] != '/') {
+        char* user = calloc(BUFLEN, sizeof(char));
+        size_t index = 0;
+        path++;
+        while (*path != '/' && *path != '\0') {
+            user[index] = *path;
+            index++;
+            path++;
+        }
+        struct passwd *pw = getpwnam(user);
+        if (pw == NULL) {
+            fprintf(stderr, "This user does not exist\n");
+            return;
+        }
+        newPath = pw->pw_dir;
     }
 
     // Set the new current working directory
